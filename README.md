@@ -1,9 +1,14 @@
-# HSBC Monthly Bank Analyzer (Streamlit)
+# HSBC Monthly Bank Analyzer (v2 with Split)
 
-A minimized Streamlit app tailored for **HSBC statement PDFs**.
-- Fixed regex and date format for lines like `01 Sep 25 ... 1,234.56 7,890.12`
-- Monthly filter (quick buttons: This month / Last month / Custom range)
-- Categorizes **inbound**/**outbound** by simple rules (eBay payouts, transfers, DDs, card payments, suppliers, salary, other)
-- Summaries by category (monthly) + detail export
+Tailored for **HSBC statement PDFs**. Inbound credits are **split**:
+- **Chiyuan 20%**
+- **Jiahan 80%**
 
-> If PDF is scanned image, OCR first to a searchable PDF.
+## Features
+- Fixed HSBC parsing (e.g. `01 Sep 25 ... 1,234.56 7,890.12`)
+- Month quick-select (This Month / Last Month) + custom dates
+- Categorization (eBay payout/Transfer In, AMEX, DD NOVUNA, Supplier, etc.)
+- **Inbound split** per-transaction and per-month totals
+- CSV export includes split columns
+
+> Note: OCR scanned PDFs first to make them text-searchable.
