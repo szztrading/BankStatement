@@ -5,7 +5,7 @@ import pdfplumber
 import pandas as pd
 
 LINE_RE = re.compile(
-    r"^(?P<date>\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})\s+(?P<description>.+?)\s+(?P<amount>\(?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?)\s*(?:£?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?)?$"
+    r"^(?P<date>\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})\s+(?P<description>.+?)\s+(?P<amount>\(?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?)\s*(?P<balance>£?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?)?$"
 )
 
 def _to_amount(s: str) -> float | None:
@@ -24,12 +24,33 @@ def _to_amount(s: str) -> float | None:
     except Exception:
         return None
 
+def _infer_signed_amount(description: str, signed_amount: float) -> float:
+    if signed_amount < 0:
+        return signed_amount
+    s = (" " + (description or "") + " ").upper()
+    if " CR " in s or s.strip().startswith("CR "):
+        return abs(signed_amount)
+    inbound_transfer = (" TRANSFER " in s) and ((" SZZ TRADING " in s) or (" EBAY " in s) or (" PAYOUT " in s))
+    debit_triggers = any(code in s for code in [" DD ", " SO ", " DR ", " OBP ", " AMERICAN EXP", " AMEX", " NOVUNA "])
+    bp_present = (" BP " in s) or s.strip().startswith("BP ")
+    if debit_triggers:
+        if inbound_transfer:
+            return abs(signed_amount)
+        return -abs(signed_amount)
+    if bp_present:
+        if inbound_transfer:
+            return abs(signed_amount)
+        return -abs(signed_amount)
+    return abs(signed_amount)
+
 def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
     rows = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""
             for ln in [ln.strip() for ln in text.splitlines() if ln.strip()]:
+                if "BALANCE BROUGHT FORWARD" in ln.upper() or "BALANCE CARRIED FORWARD" in ln.upper():
+                    continue
                 m = LINE_RE.match(ln)
                 if not m:
                     continue
@@ -38,6 +59,7 @@ def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
                 amt = _to_amount(d["amount"])
                 if amt is None:
                     continue
+                amt = _infer_signed_amount(d["description"], amt)
                 rows.append({
                     "date_raw": date_str,
                     "description": d["description"].strip(),
