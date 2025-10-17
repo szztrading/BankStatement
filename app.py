@@ -1,104 +1,103 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
-from datetime import datetime
 import re
+from datetime import date, datetime, timedelta
+from parsers import parse_hsbc_pdf_bytes, categorize
 
-from parsers import parse_pdf_bytes, ParseConfig
+st.set_page_config(page_title="HSBC 月度账单分析", page_icon="📈", layout="wide")
+st.title("📈 HSBC 月度账单分析（PDF）")
+st.caption("固定 HSBC 解析规则：只需上传 PDF，选择月份／日期范围，即可按**入账/出账**类别汇总。")
 
-st.set_page_config(page_title="PDF 银行账单分析", page_icon="💳", layout="wide")
+uploaded_files = st.file_uploader("上传 HSBC 对账单 PDF（可多选）", type=["pdf"], accept_multiple_files=True)
 
-st.title("💳 银行账单（PDF）分析器")
-st.caption("上传 PDF，对指定时间内的入账/出账/净额进行统计。支持多文件与自定义正则。")
+def month_bounds(d: date):
+    first = d.replace(day=1)
+    if first.month == 12:
+        nxt = first.replace(year=first.year+1, month=1, day=1)
+    else:
+        nxt = first.replace(month=first.month+1, day=1)
+    last = nxt - timedelta(days=1)
+    return first, last
 
-with st.sidebar:
-    st.header("⚙️ 解析设置")
-    st.markdown("**日期解析**默认 dayfirst=True（17/10/2025 视为 17 Oct 2025）。")
-    custom_date_fmt = st.text_input("自定义日期格式（可选，如 %d/%m/%Y）")
-    st.markdown("**自定义正则（可选）** 必须包含命名组：`date`、`description`，以及 `amount` 或 `debit/credit`。")
-    st.code(r"^(?P<date>\d{2}/\d{2}/\d{4})\s+(?P<description>.*?)\s+(?P<amount>[-+]?[\d,]+\.\d{2})$", language="regex")
-    custom_regex = st.text_area("粘贴你的正则（可留空）")
+# Default range: current month
+today = date.today()
+m_first, m_last = month_bounds(today)
 
-cfg = ParseConfig(custom_regex=custom_regex.strip() or None, custom_date_format=custom_date_fmt.strip() or None)
+col1, col2, col3, col4 = st.columns([1.2,1.2,1,2])
+with col1:
+    if st.button("📅 本月"):
+        st.session_state["start_date"] = m_first
+        st.session_state["end_date"] = m_last
+with col2:
+    last_month_ref = (today.replace(day=1) - timedelta(days=1))
+    lm_first, lm_last = month_bounds(last_month_ref)
+    if st.button("📆 上月"):
+        st.session_state["start_date"] = lm_first
+        st.session_state["end_date"] = lm_last
+with col3:
+    if st.button("🧹 清空选择"):
+        st.session_state.pop("start_date", None)
+        st.session_state.pop("end_date", None)
+with col4:
+    st.info("入账为正、出账为负；分类基于描述关键字的启发式规则。", icon="ℹ️")
 
-uploaded_files = st.file_uploader("上传 1 个或多个银行 PDF", type=["pdf"], accept_multiple_files=True)
+start_date = st.date_input("开始日期", value=st.session_state.get("start_date", m_first))
+end_date = st.date_input("结束日期", value=st.session_state.get("end_date", m_last))
 
 if uploaded_files:
-    dfs = []
+    frames = []
     for f in uploaded_files:
-        data = f.read()
-        df = parse_pdf_bytes(data, cfg)
+        df = parse_hsbc_pdf_bytes(f.read())
         if df.empty:
-            st.warning(f"❗️ {f.name} 未解析出有效交易。若为扫描件，请先 OCR 转文本 PDF，或设置自定义正则。")
+            st.warning(f"{f.name} 未解析到有效交易（若为扫描件请先 OCR）。")
         else:
             df["source_file"] = f.name
-            dfs.append(df)
+            frames.append(df)
+    if frames:
+        all_df = pd.concat(frames, ignore_index=True)
+        mask = (all_df["date"] >= pd.to_datetime(start_date)) & (all_df["date"] <= pd.to_datetime(end_date))
+        view = all_df.loc[mask].copy()
+        if view.empty:
+            st.info("选定日期范围内无交易。")
+        else:
+            # Categorize
+            view["category"] = view.apply(lambda r: categorize(r["description"], r["amount"]), axis=1)
 
-    if dfs:
-        df_all = pd.concat(dfs, ignore_index=True)
+            # KPI
+            total_in = view["credit"].sum()
+            total_out = view["debit"].sum()
+            net = view["amount"].sum()
+            k1,k2,k3,k4 = st.columns(4)
+            k1.metric("入账合计", f"{total_in:,.2f}")
+            k2.metric("出账合计", f"{total_out:,.2f}")
+            k3.metric("净额", f"{net:,.2f}")
+            k4.metric("交易笔数", len(view))
 
-        min_d, max_d = df_all["date"].min().date(), df_all["date"].max().date()
-        st.subheader("📅 时间筛选")
-        col_a, col_b, col_c = st.columns([1,1,1])
-        with col_a:
-            start_date = st.date_input("起始日期", value=min_d, min_value=min_d, max_value=max_d)
-        with col_b:
-            end_date = st.date_input("截止日期", value=max_d, min_value=min_d, max_value=max_d)
-        with col_c:
-            st.write("")
-            st.write("")
-            st.info("入账为正，出账为负。")
+            # Monthly summaries
+            view["month"] = view["date"].dt.to_period("M").astype(str)
 
-        mask = (df_all["date"] >= pd.to_datetime(start_date)) & (df_all["date"] <= pd.to_datetime(end_date))
-        view = df_all.loc[mask].copy()
+            st.subheader("📥 入账分类汇总（按月）")
+            inbound = view[view["amount"] > 0]
+            if inbound.empty:
+                st.write("无入账。")
+            else:
+                inbound_sum = inbound.groupby(["month","category"], as_index=False).agg(入账金额=("credit","sum"), 笔数=("credit","count"))
+                st.dataframe(inbound_sum, use_container_width=True)
 
-        with st.expander("🔎 关键词过滤（可选）"):
-            inc_kw = st.text_input("仅保留包含这些关键词（逗号分隔）")
-            exc_kw = st.text_input("排除包含这些关键词（逗号分隔）")
-            if inc_kw:
-                keys = [k.strip().lower() for k in inc_kw.split(',') if k.strip()]
-                if keys:
-                    view = view[view["description"].str.lower().str.contains("|".join(map(re.escape, keys)))]
-            if exc_kw:
-                keys = [k.strip().lower() for k in exc_kw.split(',') if k.strip()]
-                if keys:
-                    view = view[~view["description"].str.lower().str.contains("|".join(map(re.escape, keys)))]
+            st.subheader("📤 出账分类汇总（按月）")
+            outbound = view[view["amount"] < 0]
+            if outbound.empty:
+                st.write("无出账。")
+            else:
+                outbound_sum = outbound.groupby(["month","category"], as_index=False).agg(出账金额=("debit","sum"), 笔数=("debit","count"))
+                st.dataframe(outbound_sum, use_container_width=True)
 
-        total_in = view["credit"].sum()
-        total_out = view["debit"].sum()
-        net = view["amount"].sum()
+            st.markdown("### 📄 明细（已分类）")
+            show_cols = ["date","description","category","debit","credit","amount","source_file"]
+            st.dataframe(view[show_cols].sort_values("date"), use_container_width=True)
 
-        st.subheader("📊 结果概览")
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("入账合计", f"{total_in:,.2f}")
-        k2.metric("出账合计", f"{total_out:,.2f}")
-        k3.metric("净额", f"{net:,.2f}")
-        k4.metric("交易笔数", len(view))
-
-        st.markdown("### 📅 按月汇总")
-        mv = view.copy()
-        mv["month"] = mv["date"].dt.to_period("M").astype(str)
-        monthly = mv.groupby("month").agg(
-            入账=("credit", "sum"),
-            出账=("debit", "sum"),
-            净额=("amount", "sum"),
-            笔数=("amount", "count"),
-        ).reset_index()
-        st.dataframe(monthly, use_container_width=True)
-
-        st.markdown("### 📄 交易明细（标准化）")
-        show_cols = ["date", "description", "debit", "credit", "amount", "source_file"]
-        st.dataframe(view[show_cols], use_container_width=True)
-
-        csv_bytes = view[show_cols].to_csv(index=False).encode("utf-8-sig")
-        st.download_button("⬇️ 下载筛选后的 CSV", data=csv_bytes, file_name=f"bank_tx_{start_date}_{end_date}.csv", mime="text/csv")
-
-        with st.expander("🛠️ 解析调试信息"):
-            st.write("如果某些 PDF 没有解析出来，可以：")
-            st.write("1) 打开自定义正则，并根据实际行样式编写；")
-            st.write("2) 将扫描件做 OCR 转换；")
-            st.write("3) 提供样例 PDF，扩展 parsers.py 的适配逻辑。")
-    else:
-        st.info("尚无可展示数据。")
+            # Export
+            csv_bytes = view[show_cols].to_csv(index=False).encode("utf-8-sig")
+            st.download_button("⬇️ 下载明细 CSV", data=csv_bytes, file_name=f"hsbc_tx_{start_date}_{end_date}.csv", mime="text/csv")
 else:
-    st.info("请上传 PDF 文件开始分析。")
+    st.info("上传 PDF 开始分析。")
