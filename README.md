@@ -1,9 +1,10 @@
-# HSBC Monthly Bank Analyzer — Bilingual v2.1 (Improved OUT detection)
+# HSBC Monthly Bank Analyzer — Bilingual v2.2
 
-Enhancements:
-- Better **debit/outgoing** detection using transaction codes & keywords (DD, SO, DR, OBP, AMERICAN EXP, NOVUNA, BP).
-- Exceptions for inbound transfers (e.g., 'Transfer' + 'SZZ TRADING'/'EBAY'/'PAYOUT' treated as inbound).
-- Optional trailing balance parsing (ignored in calculations).
-- Bilingual UI (English/中文) with full revenue split (Chiyuan 20% / Jiahan 80%).
+**What's new (v2.2):**
+- Explicit support for **'Paid out'** and **'Paid in'** logic.
+- Right-to-left tail parsing: captures multiple trailing numbers
+  (amount columns + optional balance) and infers debit/credit robustly.
+- Keeps improved OUT detection (DD/SO/DR/OBP/AMEX/NOVUNA/BP) and inbound transfer exceptions.
+- Bilingual UI (English/中文) and revenue split (Chiyuan 20% / Jiahan 80%).
 
-If your PDFs are scanned images, OCR them first.
+If PDFs are scanned images, OCR first.
