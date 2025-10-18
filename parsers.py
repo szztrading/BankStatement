@@ -1,11 +1,11 @@
 from __future__ import annotations
 import io, re
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import pdfplumber
 import pandas as pd
 
 AMT_RE = r"\(?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?"
-LINE_HEAD_RE = re.compile(r"^(?P<date>\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})\s+(?P<rest>.+)$")
+DATE_RE = re.compile(r"^(?P<date>\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})\s+(?P<rest>.+)$")
 
 def _to_amount(s: str) -> float | None:
     if s is None:
@@ -38,19 +38,25 @@ def _kw_sign(desc: str) -> Optional[int]:
     return None
 
 def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
-    rows = []
+    entries: List[Dict[str, Any]] = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
+        current_date = None
         for page in pdf.pages:
             text = page.extract_text() or ""
             for raw in [ln.strip() for ln in text.splitlines() if ln.strip()]:
                 U = raw.upper()
                 if "BALANCE BROUGHT FORWARD" in U or "BALANCE CARRIED FORWARD" in U:
                     continue
-                m = LINE_HEAD_RE.match(raw)
-                if not m:
-                    continue
-                date_str = m.group("date").strip()
-                rest = m.group("rest")
+                m = DATE_RE.match(raw)
+                if m:
+                    current_date = m.group("date").strip()
+                    rest = m.group("rest")
+                else:
+                    if current_date is None:
+                        continue
+                    rest = raw
+
+                # find numeric tokens (use last up to 3: [Paid out] [Paid in] [Balance])
                 all_amts = list(re.finditer(AMT_RE, rest))
                 if not all_amts:
                     continue
@@ -60,7 +66,6 @@ def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
                 description = rest[:desc_end].strip()
 
                 paid_out = paid_in = balance = None
-
                 if len(nums) == 3:
                     paid_out, paid_in, balance = nums
                 elif len(nums) == 2:
@@ -71,53 +76,124 @@ def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
                     elif sign == +1:
                         paid_in, balance = amt1, amt2
                     else:
-                        paid_out, balance = amt1, amt2
+                        # unknown: treat as amount + balance; sign to be inferred by balance later
+                        paid_in, balance = amt1, amt2  # provisional
                 elif len(nums) == 1:
-                    sign = _kw_sign(description)
-                    if sign == -1:
-                        paid_out = nums[0]
-                    else:
-                        paid_in = nums[0]
+                    paid_in = nums[0]  # provisional
                 else:
                     nums = nums[-3:]
                     paid_out, paid_in, balance = nums
 
-                amount = None
-                if paid_out is not None and paid_in is not None:
-                    out_v = _to_amount(paid_out) or 0.0
-                    in_v  = _to_amount(paid_in) or 0.0
-                    if abs(out_v) > 0:
-                        amount = -abs(out_v)
-                    elif abs(in_v) > 0:
-                        amount = abs(in_v)
-                    else:
-                        continue
-                else:
-                    raw_amount = paid_in if paid_in is not None else paid_out
-                    if raw_amount is None:
-                        continue
-                    v = _to_amount(raw_amount)
-                    if v is None:
-                        continue
-                    if paid_out is not None:
-                        amount = -abs(v)
-                    else:
-                        amount = abs(v)
+                amount_raw = paid_in if paid_in is not None else paid_out
+                amount_val = _to_amount(amount_raw) if amount_raw is not None else None
+                bal_val = _to_amount(balance) if balance is not None else None
 
-                rows.append({
-                    "date_raw": date_str,
+                entries.append({
+                    "date_raw": current_date,
                     "description": description,
-                    "amount": amount,
+                    "amount_abs": abs(amount_val) if amount_val is not None else None,
+                    "has_paid_out": paid_out is not None and paid_in is None,
+                    "has_paid_in": paid_in is not None and paid_out is None,
+                    "has_both_cols": paid_out is not None and paid_in is not None,
+                    "balance": bal_val,
+                    "kw_sign": _kw_sign(description),
                 })
 
-    if not rows:
+    if not entries:
         return pd.DataFrame(columns=["date","description","amount","debit","credit"])
 
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date_raw"], format="%d %b %y", errors="coerce")
-    bad = df["date"].isna()
-    if bad.any():
-        df.loc[bad, "date"] = pd.to_datetime(df.loc[bad, "date_raw"], format="%d %b %Y", errors="coerce")
+    # Pass 1: date parsing
+    for e in entries:
+        e["date"] = pd.to_datetime(e["date_raw"], format="%d %b %y", errors="coerce")
+        if pd.isna(e["date"]):
+            e["date"] = pd.to_datetime(e["date_raw"], format="%d %b %Y", errors="coerce")
+
+    # Pass 2: sign resolution with balance-driven segments
+    out_rows = []
+    last_balance = None
+    pending = []  # list of indices for entries since last known balance
+    for idx, e in enumerate(entries):
+        # skip non-dated lines that failed parsing
+        if pd.isna(e["date"]):
+            continue
+        amt_abs = e["amount_abs"]
+        if amt_abs is None:
+            continue
+
+        signed = None
+
+        if e["has_both_cols"]:
+            # choose non-zero; out takes precedence
+            # but we don't have zeros here; assume paid_out means debit
+            signed = -amt_abs  # conservative
+        elif e["has_paid_out"]:
+            signed = -amt_abs
+        elif e["has_paid_in"]:
+            signed = +amt_abs
+        else:
+            # provisional; decide via balance or keyword later
+            signed = None
+
+        # If this entry has a balance, we can reconcile the segment
+        if e["balance"] is not None:
+            # Include current in segment
+            segment = pending + [(idx, signed)]
+            # Compute known sum
+            known = sum(v for (_, v) in segment if v is not None)
+            unknown_count = sum(1 for (_, v) in segment if v is None)
+
+            if last_balance is None:
+                # No prior balance; use keywords for unknowns defaulting to credit
+                for (j, v) in segment:
+                    if v is None:
+                        sign = entries[j]["kw_sign"]
+                        entries[j]["signed"] = (amt := entries[j]["amount_abs"]) * (1 if sign == +1 else -1 if sign == -1 else +1)
+                    else:
+                        entries[j]["signed"] = v
+                last_balance = e["balance"]
+            else:
+                target_delta = e["balance"] - last_balance
+                # Assign unknowns to make known + assigned == target_delta
+                # If multiple unknowns, assign all the same sign matching (target_delta - known)
+                remaining = target_delta - known
+                for (j, v) in segment:
+                    if v is None:
+                        amt = entries[j]["amount_abs"]
+                        # If remaining is negative -> debit, positive -> credit
+                        s = -1 if remaining < 0 else +1
+                        entries[j]["signed"] = s * amt
+                        remaining -= entries[j]["signed"]
+                    else:
+                        entries[j]["signed"] = v
+                last_balance = e["balance"]
+
+            # Flush segment to out_rows
+            for (j, _) in segment:
+                ee = entries[j]
+                out_rows.append({
+                    "date": ee["date"],
+                    "description": ee["description"],
+                    "amount": ee["signed"],
+                })
+            pending = []
+        else:
+            # no balance yet; hold in pending
+            pending.append((idx, signed))
+
+    # Flush remaining pending (no trailing balance): fall back to keywords or assume credits
+    for (j, v) in pending:
+        ee = entries[j]
+        amt = ee["amount_abs"]
+        if amt is None:
+            continue
+        if v is not None:
+            signed = v
+        else:
+            sign = ee["kw_sign"]
+            signed = amt * (1 if sign == +1 else -1 if sign == -1 else +1)
+        out_rows.append({"date": ee["date"], "description": ee["description"], "amount": signed})
+
+    df = pd.DataFrame(out_rows)
     df = df.dropna(subset=["date"]).copy()
     df["debit"] = df["amount"].apply(lambda x: -x if x < 0 else 0.0)
     df["credit"] = df["amount"].apply(lambda x: x if x > 0 else 0.0)

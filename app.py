@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import date, timedelta
 from parsers import parse_hsbc_pdf_bytes, categorize
 
-st.set_page_config(page_title="HSBC Monthly Analyzer · Bilingual v2.3", page_icon="🌐", layout="wide")
+st.set_page_config(page_title="HSBC Monthly Analyzer · Bilingual v2.4", page_icon="🌐", layout="wide")
 
 lang = st.radio("Language / 语言", ["English", "中文"], horizontal=True)
 
