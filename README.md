@@ -1,9 +1,7 @@
-# HSBC Monthly Bank Analyzer — Bilingual v2.4
+# HSBC Monthly Bank Analyzer — Bilingual v2.5
 
-**What's new (v2.4):**
-- **Balance-driven sign inference**: sequences of lines without an explicit balance are grouped;
-  when a subsequent line provides the new balance, signs for the pending lines are backfilled to match
-  the net balance change (typical for consecutive 'Paid out' items printed as positives).
-- Keeps column semantics (Paid out/ Paid in), keyword rules, and bilingual UI with revenue split.
-
-If PDFs are scanned images, OCR first.
+**Fixes**
+- Ignore footer/help lines (phone numbers, opening hours, guidance text).
+- Stricter amount token: must have **two decimals** (prevents phone numbers like 03457... from being treated as money).
+- More tolerant skip for balance headers: `BALANCE BROUGHT FORWARD`, `BALANCE CARRIED FORWARD` (with punctuation).
+- Keeps Paid out / Paid in column semantics, balance-driven backfill, bilingual UI, and revenue split.
