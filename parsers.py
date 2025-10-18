@@ -23,8 +23,7 @@ def _to_amount(s: str) -> float | None:
     except Exception:
         return None
 
-def _infer_from_keywords(desc: str) -> Optional[int]:
-    # Return +1 for credit, -1 for debit, or None if unknown, based on keywords.
+def _kw_sign(desc: str) -> Optional[int]:
     s = (" " + (desc or "") + " ").upper()
     if " PAID IN " in s or " CR " in s or s.strip().startswith("CR "):
         return +1
@@ -52,7 +51,6 @@ def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
                     continue
                 date_str = m.group("date").strip()
                 rest = m.group("rest")
-                # collect last up to 3 currency tokens on the line
                 all_amts = list(re.finditer(AMT_RE, rest))
                 if not all_amts:
                     continue
@@ -62,53 +60,59 @@ def parse_hsbc_pdf_bytes(data: bytes) -> pd.DataFrame:
                 description = rest[:desc_end].strip()
 
                 paid_out = paid_in = balance = None
+
                 if len(nums) == 3:
                     paid_out, paid_in, balance = nums
                 elif len(nums) == 2:
                     amt1, amt2 = nums
-                    sign = _infer_from_keywords(description)
+                    sign = _kw_sign(description)
                     if sign == -1:
                         paid_out, balance = amt1, amt2
                     elif sign == +1:
                         paid_in, balance = amt1, amt2
                     else:
-                        # default: treat as paid_in then balance
-                        paid_in, balance = amt1, amt2
+                        paid_out, balance = amt1, amt2
                 elif len(nums) == 1:
-                    paid_in = nums[0]
+                    sign = _kw_sign(description)
+                    if sign == -1:
+                        paid_out = nums[0]
+                    else:
+                        paid_in = nums[0]
                 else:
                     nums = nums[-3:]
                     paid_out, paid_in, balance = nums
 
-                raw_amount = paid_in if paid_in is not None else paid_out
-                amt = _to_amount(raw_amount) if raw_amount is not None else None
-                if amt is None:
-                    continue
-
-                if paid_out is not None and (paid_in is None):
-                    amt = -abs(amt)
-
-                if paid_in is not None and paid_out is None:
-                    sign = _infer_from_keywords(description)
-                    if sign == -1:
-                        amt = -abs(amt)
+                amount = None
+                if paid_out is not None and paid_in is not None:
+                    out_v = _to_amount(paid_out) or 0.0
+                    in_v  = _to_amount(paid_in) or 0.0
+                    if abs(out_v) > 0:
+                        amount = -abs(out_v)
+                    elif abs(in_v) > 0:
+                        amount = abs(in_v)
                     else:
-                        amt = abs(amt)
-                elif paid_out is not None and paid_in is not None:
-                    amt_in = _to_amount(paid_in)
-                    amt_out = _to_amount(paid_out)
-                    if (amt_out or 0) != 0:
-                        amt = -abs(amt_out or 0)
+                        continue
+                else:
+                    raw_amount = paid_in if paid_in is not None else paid_out
+                    if raw_amount is None:
+                        continue
+                    v = _to_amount(raw_amount)
+                    if v is None:
+                        continue
+                    if paid_out is not None:
+                        amount = -abs(v)
                     else:
-                        amt = abs(amt_in or 0)
+                        amount = abs(v)
 
                 rows.append({
                     "date_raw": date_str,
                     "description": description,
-                    "amount": amt,
+                    "amount": amount,
                 })
+
     if not rows:
         return pd.DataFrame(columns=["date","description","amount","debit","credit"])
+
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date_raw"], format="%d %b %y", errors="coerce")
     bad = df["date"].isna()

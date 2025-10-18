@@ -3,15 +3,12 @@ import pandas as pd
 from datetime import date, timedelta
 from parsers import parse_hsbc_pdf_bytes, categorize
 
-st.set_page_config(page_title="HSBC Monthly Analyzer · Bilingual v2.2", page_icon="🌐", layout="wide")
+st.set_page_config(page_title="HSBC Monthly Analyzer · Bilingual v2.3", page_icon="🌐", layout="wide")
 
 lang = st.radio("Language / 语言", ["English", "中文"], horizontal=True)
 
 T = {
-    "title": {
-        "en": "HSBC Monthly Bank Analyzer (with Revenue Split)",
-        "zh": "汇丰银行月度账单分析（含分成计算）",
-    },
+    "title": {"en": "HSBC Monthly Bank Analyzer (with Revenue Split)", "zh": "汇丰银行月度账单分析（含分成计算）"},
     "subtitle": {
         "en": "Upload HSBC PDFs, select a month or custom date range; all credits are split: Chiyuan 20% / Jiahan 80%.",
         "zh": "上传 HSBC PDF，选择月份或日期范围；所有入账按 智远20% / 嘉翰80% 分成。",

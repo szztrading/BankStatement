@@ -1,10 +1,3 @@
-# HSBC Monthly Bank Analyzer — Bilingual v2.2
+# HSBC Monthly Bank Analyzer — Bilingual v2.3
 
-**What's new (v2.2):**
-- Explicit support for **'Paid out'** and **'Paid in'** logic.
-- Right-to-left tail parsing: captures multiple trailing numbers
-  (amount columns + optional balance) and infers debit/credit robustly.
-- Keeps improved OUT detection (DD/SO/DR/OBP/AMEX/NOVUNA/BP) and inbound transfer exceptions.
-- Bilingual UI (English/中文) and revenue split (Chiyuan 20% / Jiahan 80%).
-
-If PDFs are scanned images, OCR first.
+Treats 'Paid out' and 'Paid in' as column semantics. When both amounts appear on a line, interpret them as: [Paid out] [Paid in] [Balance].
